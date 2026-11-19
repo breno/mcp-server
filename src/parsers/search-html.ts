@@ -3,6 +3,8 @@ import type { CheerioAPI } from "cheerio";
 
 export interface SerpOrganicResult {
   position: number;
+  /** Which Google results page the result came from (1-based). */
+  page: number;
   title: string;
   /**
    * The result's link, made absolute. The page's real address when Google
@@ -43,6 +45,8 @@ export interface SerpResult {
   organic: SerpOrganicResult[];
   ai_overview: SerpAiOverview | null;
   people_also_ask: SerpPaaItem[];
+  /** The number of results Google reports ("About 218,000,000 results"), or null when it prints none. */
+  result_count: number | null;
   query: string;
   /** Present only when there is something to report, e.g. results that could not be read. */
   warnings?: string[];
@@ -53,18 +57,50 @@ export interface ParseSerpOptions {
   maxResults: number;
 }
 
+/**
+ * Splits a /search response into its pages. With `serps` > 1 the API returns one
+ * HTML document per page, one after the other; a response without a doctype is one page.
+ */
+export function splitPages(html: string): string[] {
+  const parts = html.split(/(?=<!doctype)/i).filter((p) => p.trim().length > 0);
+  return parts.length ? parts : [html];
+}
+
 export function parseSerp(html: string, opts: ParseSerpOptions): SerpResult {
-  const $ = cheerio.load(html);
-  const organic = extractOrganic($, opts.maxResults);
+  const pages = splitPages(html).map((p) => cheerio.load(p));
+  const first = pages[0]!;
+  const found = pages.flatMap(($, k) => extractOrganic($).map(({ position, ...rest }) => ({ position, page: k + 1, ...rest })));
+  // Positions run across pages: 1-based and sequential after slicing.
+  const organic = found.slice(0, opts.maxResults).map((r, i) => ({ ...r, position: i + 1 }));
+  let resultCount: number | null = null;
+  for (const $ of pages) {
+    resultCount = parseResultCount($("#result-stats").first().text());
+    if (resultCount !== null) break;
+  }
   const out: SerpResult = {
     organic,
-    ai_overview: extractAiOverview($),
-    people_also_ask: extractPaa($, opts.query),
+    ai_overview: extractAiOverview(first),
+    people_also_ask: extractPaa(first, opts.query),
+    result_count: resultCount,
     query: opts.query,
   };
-  const warnings = [...organicWarnings($, organic.length), ...paaWarnings($, out.people_also_ask)];
+  const warnings = [...organicWarnings(pages, found.length), ...paaWarnings(first, out.people_also_ask)];
   if (warnings.length) out.warnings = warnings;
   return out;
+}
+
+/**
+ * Reads the result count from Google's stats line, in any language:
+ * "About 218,000,000 results (0.32s)", "Page 2 of about 19,400 results",
+ * "約 60,500,000 件", "Ungefähr 79 Ergebnisse (0,19 Sek.)". null when there is none.
+ */
+export function parseResultCount(text: string): number | null {
+  const t = text.replace(/[(\uff08][^)\uff09]*[)\uff09]/g, " "); // the timing, "(0.32s)"
+  const numbers = t.match(/\d[\d.,'\s\u00a0\u202f]*/g);
+  if (!numbers) return null;
+  const digits = numbers[numbers.length - 1]!.replace(/\D/g, "");
+  const n = Number(digits);
+  return digits && Number.isSafeInteger(n) ? n : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -303,11 +339,8 @@ function extractPaa($: CheerioAPI, searchQuery: string): SerpPaaItem[] {
 // Organic results
 // ---------------------------------------------------------------------------
 
-function extractOrganic(
-  $: CheerioAPI,
-  maxResults: number,
-): SerpOrganicResult[] {
-  const out: SerpOrganicResult[] = [];
+function extractOrganic($: CheerioAPI): Array<Omit<SerpOrganicResult, "page">> {
+  const out: Array<Omit<SerpOrganicResult, "page">> = [];
   $(".yuRUbf").each((i, el) => {
     const $el = $(el);
     const title = $el.find("h3").first().text().trim();
@@ -330,17 +363,18 @@ function extractOrganic(
       snippet,
     });
   });
-  // Re-number positions after slicing so they remain 1-based and sequential
-  // even when maxResults < collected count.
-  return out.slice(0, maxResults).map((r, i) => ({ ...r, position: i + 1 }));
+  return out;
 }
 
 // A page with result headings but no result read means the page layout has
 // moved on, not that there are no results: say so instead of returning [].
-function organicWarnings($: CheerioAPI, organicCount: number): string[] {
+function organicWarnings(pages: CheerioAPI[], organicCount: number): string[] {
   if (organicCount > 0) return [];
   // Result headings only: "People also ask" questions and AI answers have h3s too.
-  const headings = $("#rso h3").filter((_i, h) => $(h).closest(".related-question-pair, .pOOWX, .mZJni").length === 0).length;
+  const headings = pages.reduce(
+    (n, $) => n + $("#rso h3").filter((_i, h) => $(h).closest(".related-question-pair, .pOOWX, .mZJni").length === 0).length,
+    0,
+  );
   if (headings === 0) return [];
   return [
     `The page shows ${headings} result heading(s), but none could be read: Google may have changed its page layout. Treat this as a parser problem, not as "no results".`,

@@ -193,4 +193,65 @@ describe("webSearchHandler", () => {
     const [reqUrl] = fetchSpy.mock.calls[0];
     expect(reqUrl).not.toMatch(/subdivision=/);
   });
+
+  describe("deeper searches, waits and raw page", () => {
+    const ok = () =>
+      vi.fn().mockResolvedValue(new Response(fixture, { status: 200, headers: { "content-type": "text/html" } }));
+
+    it.each([
+      [10, null],
+      [11, "2"],
+      [30, "3"],
+      [95, "10"],
+      [100, "10"],
+    ])("max_results %i asks for serps=%s", async (max, serps) => {
+      const fetchSpy = ok();
+      const client = new MassiveClient({ fetchImpl: fetchSpy });
+      await webSearchHandler({ query: "x", max_results: max } as never, client);
+      const params = new URL(fetchSpy.mock.calls[0][0]).searchParams;
+      expect(params.get("serps")).toBe(serps);
+      expect(params.has("size")).toBe(false);
+    });
+
+    it("rejects max_results above 100", async () => {
+      const fetchSpy = vi.fn();
+      const client = new MassiveClient({ fetchImpl: fetchSpy });
+      const result = await webSearchHandler({ query: "x", max_results: 101 } as never, client);
+      expect(result.isError).toBe(true);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [true, true, ["ai", "answers"]],
+      [false, true, ["answers"]],
+      [true, false, ["ai"]],
+      [false, false, []],
+    ])("include_ai_overview=%s include_people_also_ask=%s awaits %j", async (aio, paa, awaiting) => {
+      const fetchSpy = ok();
+      const client = new MassiveClient({ fetchImpl: fetchSpy });
+      await webSearchHandler(
+        { query: "x", max_results: 10, include_ai_overview: aio, include_people_also_ask: paa } as never,
+        client,
+      );
+      expect(new URL(fetchSpy.mock.calls[0][0]).searchParams.getAll("awaiting")).toEqual(awaiting);
+    });
+
+    it("returns the page as the API returned it only when include_html is true", async () => {
+      const client = new MassiveClient({ fetchImpl: ok() });
+      const plain = await webSearchHandler({ query: "x", max_results: 10 }, client);
+      expect(plain.structuredContent).not.toHaveProperty("html");
+
+      const raw = await webSearchHandler({ query: "x", max_results: 10, include_html: true } as never, new MassiveClient({ fetchImpl: ok() }));
+      expect((raw.structuredContent as { html: string }).html).toBe(fixture);
+      expect(JSON.parse(raw.content[0].text as string).html).toBe(fixture);
+    });
+
+    it("returns result_count and page on each result", async () => {
+      const client = new MassiveClient({ fetchImpl: ok() });
+      const result = await webSearchHandler({ query: "x", max_results: 10 }, client);
+      const sc = result.structuredContent as { result_count: unknown; organic: Array<{ page: number }> };
+      expect(sc).toHaveProperty("result_count");
+      for (const r of sc.organic) expect(r.page).toBe(1);
+    });
+  });
 });

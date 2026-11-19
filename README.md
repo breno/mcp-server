@@ -85,18 +85,31 @@ Google search results, parsed into structured JSON.
 | `country` | string (ISO) | — |
 | `city` | string | — |
 | `subdivision` | string | — |
-| `max_results` | number | 10 |
+| `max_results` | number (1–100) | 10 |
 | `expiration` | integer (0–365) | — |
 | `language` | string | — |
 | `display` | string | — |
+| `include_ai_overview` | boolean | `true` |
+| `include_people_also_ask` | boolean | `true` |
+| `include_html` | boolean | `false` |
 
-Returns: `{ organic, ai_overview, people_also_ask, query }`, plus `warnings` when there is something to report
-(for example a page whose results could not be read).
+`max_results` above 10 fetches more Google pages: one page for every 10 results asked for, up to 10 pages.
+Each result says which `page` it came from. Set `include_ai_overview` / `include_people_also_ask` to `false` when
+you don't need that part, so the search does not wait for it; that part may then come back empty.
+`include_html: true` also returns the page as the API returned it, in `html` (all pages, in order), for when the
+parsed fields are not enough. It is large: about 0.5 to 2 MB for each results page fetched, so ten pages can come
+close to the 25 MB response limit. The answer carries the page in both its text and its structured part, so it is
+about twice that size; use it with clients that can save a large result to a file.
+
+Returns: `{ organic, ai_overview, people_also_ask, result_count, query }`, plus `warnings` when there is something
+to report (for example a page whose results could not be read).
 
 Each organic result carries Google's link to the page, the same link the search API returns. When
 `url_is_redirect` is `true`, `url` is that Google link and the page's real address is not known yet: open it
 with `web_fetch` to read the page. `displayed_url` is the text Google prints under the title (an address,
 a breadcrumb, or "330+ followers"); it is not an address. `domain` is the result's site when the page shows it.
+`result_count` is the number of results Google reports ("About 218,000,000 results"), or `null` when the page
+prints none.
 
 Example shape:
 
@@ -106,6 +119,7 @@ Example shape:
   "organic": [
     {
       "position": 1,
+      "page": 1,
       "title": "...",
       "url": "https://www.google.com/goto?url=...",
       "url_is_redirect": true,
@@ -121,7 +135,8 @@ Example shape:
   },
   "people_also_ask": [
     { "question": "What is the best espresso machine for beginners?", "answer": "" }
-  ]
+  ],
+  "result_count": 218000000
 }
 ```
 

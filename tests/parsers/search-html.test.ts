@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseSerp, resultLink } from "../../src/parsers/search-html.js";
+import { parseResultCount, parseSerp, resultLink } from "../../src/parsers/search-html.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixture = readFileSync(
@@ -164,5 +164,56 @@ describe("resultLink", () => {
     ["", null],
   ])("%s", (href, expected) => {
     expect(resultLink(href)).toEqual(expected);
+  });
+});
+
+describe("parseSerp on a multi-page response", () => {
+  const threePages = fx("search-2026-11-three-pages.html");
+
+  it("reads results from every page, numbered across pages", () => {
+    const out = parseSerp(threePages, { query: "x", maxResults: 100 });
+    expect(out.organic).toHaveLength(24);
+    expect(out.organic.map((r) => r.page)).toEqual([...Array(7).fill(1), ...Array(9).fill(2), ...Array(8).fill(3)]);
+    out.organic.forEach((r, i) => expect(r.position).toBe(i + 1));
+  });
+
+  it("stops at max_results", () => {
+    const out = parseSerp(threePages, { query: "x", maxResults: 12 });
+    expect(out.organic).toHaveLength(12);
+    expect(out.organic.at(-1)!.page).toBe(2);
+  });
+
+  it("takes the result count from the first page that prints one", () => {
+    // Page 1 says "About 58 results", page 2 prints none, page 3 says "Page 3 of about 58 results".
+    expect(parseSerp(threePages, { query: "x", maxResults: 10 }).result_count).toBe(58);
+    const firstWithout = threePages.replace(/<div id="result-stats">About 58 results/, "<div>");
+    expect(firstWithout).not.toBe(threePages);
+    expect(parseSerp(firstWithout, { query: "x", maxResults: 10 }).result_count).toBe(58);
+  });
+
+  it("treats a response without a doctype as one page", () => {
+    const out = parseSerp(webScraping.replace(/<!doctype html>/i, ""), { query: "x", maxResults: 100 });
+    expect(out.organic).toHaveLength(9);
+    expect(new Set(out.organic.map((r) => r.page))).toEqual(new Set([1]));
+  });
+});
+
+describe("result_count", () => {
+  it("is read from the page when Google prints it, null otherwise", () => {
+    expect(parseSerp(withOverview, { query: "x", maxResults: 10 }).result_count).toBe(250);
+    expect(parseSerp(webScraping, { query: "x", maxResults: 10 }).result_count).toBeNull();
+  });
+
+  it.each([
+    ["About 218,000,000 results (0.32s)", 218000000],
+    ["Page 2 of about 19,400 results (0.17s)", 19400],
+    ["約 60,500,000 件 （0.25 秒）", 60500000],
+    ["Ungefähr 79 Ergebnisse (0,19 Sek.)", 79],
+    ["Environ 1 230 000 résultats (0,41 secondes)", 1230000],
+    ["10 results (0.21s)", 10],
+    ["", null],
+    ["No results", null],
+  ])("%s", (text, expected) => {
+    expect(parseResultCount(text)).toBe(expected);
   });
 });

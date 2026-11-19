@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+- **Deeper searches:** `max_results` up to 100. Above 10, more Google pages are fetched (one for every 10 results asked for, up to 10 pages); each result has `page`.
+- **`include_ai_overview` and `include_people_also_ask`** (default `true`, which keeps today's behaviour): the search waits for Google to load the AI overview and the "People also ask" answers. Set either to `false` when you don't need that part, so the search does not wait for it; that part may then come back empty.
+- **`result_count`**: the number of results Google reports, or `null` when it prints none.
+- **`include_html`** (default `false`): also returns the page as the API returned it, in `html`. About 0.5 to 2 MB for each results page fetched, and the answer carries it twice (text and structured part).
+
 ### Fixed
 - **`web_search` returns Google results again.** Google now writes each result link as `/goto?url=<token>`, which the parser did not read, so the result list came back empty. Each result now has its title, snippet, `displayed_url` (the address text Google shows), `domain`, and Google's link to the page in `url` (`url_is_redirect: true`), the same link the API returns; open it with `web_fetch`.
 - **AI overview sources** are listed one per cited link, with the name Google shows (`label`) and Google's link, so the cited page can be opened. The sites from the overview's favicons are in `source_domains`.

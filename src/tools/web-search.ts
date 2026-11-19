@@ -19,7 +19,15 @@ export const webSearchInput = {
     .max(8)
     .optional()
     .describe("ISO 3166-2 subdivision code (e.g. 'TN' for Tennessee). Case-insensitive. Ignored if `city` is set."),
-  max_results: z.number().int().min(1).max(50).default(10).describe("Max organic results to return (default 10)"),
+  max_results: z
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(10)
+    .describe(
+      "Max organic results to return (default 10, up to 100). Above 10, more Google pages are fetched: one for every 10 results asked for, up to 10 pages.",
+    ),
   expiration: z
     .number()
     .int("expiration must be an integer (days)")
@@ -39,7 +47,24 @@ export const webSearchInput = {
     .max(64)
     .optional()
     .describe("UI display language. Same format as `language`."),
+  include_ai_overview: z
+    .boolean()
+    .default(true)
+    .describe("Wait for Google's AI overview (default true). Set to false when you don't need it, so the search does not wait for it; it may then come back empty."),
+  include_people_also_ask: z
+    .boolean()
+    .default(true)
+    .describe("Wait for the 'people also ask' answers (default true). Set to false when you don't need them, so the search does not wait for them; they may then come back empty."),
+  include_html: z
+    .boolean()
+    .default(false)
+    .describe(
+      "Also return the page as the API returned it, in `html` (default false). Large: about 0.5 to 2 MB for each results page fetched. For when the parsed fields are not enough, and only for clients that can save a large result to a file.",
+    ),
 };
+
+export const RESULTS_PER_PAGE = 10;
+export const MAX_PAGES = 10;
 
 const InputSchema = z.object(webSearchInput);
 type Input = z.infer<typeof InputSchema>;
@@ -49,23 +74,32 @@ export async function webSearchHandler(input: Input, client: MassiveClient): Pro
     // Apply Zod defaults. Redundant in production (server.tool() pre-validates),
     // but unit tests call the handler directly with raw input.
     const parsed = InputSchema.parse(input);
+    // One Google page holds about 10 results; deeper searches ask for more pages
+    // (`serps`), sent only above 1 so the default request is unchanged.
+    const pages = Math.min(MAX_PAGES, Math.ceil(parsed.max_results / RESULTS_PER_PAGE));
+    const awaiting = [
+      ...(parsed.include_ai_overview ? ["ai"] : []),
+      ...(parsed.include_people_also_ask ? ["answers"] : []),
+    ];
     // Note: API param is `terms`, MCP-facing arg is `query`. Translate here.
     const html = await client.get<string>("/search", {
       terms: parsed.query,
       country: parsed.country,
       city: parsed.city,
       subdivision: parsed.subdivision,
-      awaiting: ["ai", "answers"],
+      serps: pages > 1 ? pages : undefined,
+      awaiting: awaiting.length ? awaiting : undefined,
       expiration: parsed.expiration,
       language: parsed.language,
       display: parsed.display,
     });
 
-    const serp = parseSerp(html, { query: parsed.query, maxResults: parsed.max_results });
+    const serp: Record<string, unknown> = { ...parseSerp(html, { query: parsed.query, maxResults: parsed.max_results }) };
+    if (parsed.include_html) serp.html = html;
 
     return {
       content: [{ type: "text", text: JSON.stringify(serp, null, 2) }],
-      structuredContent: serp as unknown as Record<string, unknown>,
+      structuredContent: serp,
     };
   } catch (err) {
     return toolError(err);
@@ -79,6 +113,8 @@ export function registerWebSearch(server: McpServer, client: MassiveClient): voi
       title: "Web search",
       description: [
         "Google search results parsed into structured JSON. Returns organic results, AI overview (if present), and 'people also ask' questions.",
+        "max_results above 10 fetches more Google pages (one per 10 results, up to 10); each result says which `page` it came from. `result_count` is the number of results Google reports, or null.",
+        "Set include_ai_overview / include_people_also_ask to false when you don't need that part, so the search does not wait for it; that part may then come back empty. include_html=true also returns the raw page in `html` (about 0.5 to 2 MB per page fetched).",
         "Each result's `url` is Google's own link to the page when `url_is_redirect` is true (the real address is not known yet): open it with web_fetch to read the page. `displayed_url` is the text Google prints under the title, not an address.",
         "",
         "Cost: 1 credit base. No multipliers.",
